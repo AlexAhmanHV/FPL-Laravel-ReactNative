@@ -1,4 +1,3 @@
-// mobile/api/auth.ts
 import { apiClient } from './client';
 
 export interface AuthUser {
@@ -30,12 +29,14 @@ export async function login(
 export async function register(
   name: string,
   email: string,
-  password: string
+  password: string,
+  passwordConfirmation?: string
 ): Promise<AuthResponse> {
   const { data } = await apiClient.post<AuthResponse>('/auth/register', {
     name,
     email,
     password,
+    password_confirmation: passwordConfirmation ?? password,
   });
   return data;
 }

@@ -3,17 +3,13 @@ import React, { useState, useEffect } from 'react';
 import {
   SafeAreaView,
   Text,
-  TextInput,
-  Button,
   ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
   ScrollView,
   StyleSheet,
   View,
 } from 'react-native';
 
-import { login } from '../../api/auth';
+import { login, register } from '../../api/auth';
 import { setAuthToken } from '../../api/client';
 import {
   fetchMeSummary,
@@ -22,6 +18,10 @@ import {
   syncMyTeam,
   fetchMyTeam,
 } from '../../api/user';
+
+import { LoginScreen } from '../../components/screens/LoginScreen';
+import { RegisterScreen } from '../../components/screens/RegisterScreen';
+import { PrimaryButton } from '../../components/ui/PrimaryButton';
 
 // --------- Types ---------
 
@@ -38,15 +38,23 @@ interface MeSummary {
   has_team: boolean;
 }
 
+type AuthMode = 'login' | 'register';
+
 // --------- Component ---------
 
 export default function Index() {
   const [token, setToken] = useState<string | null>(null);
-  const [email, setEmail] = useState<string>('alex@example.com');
-  const [password, setPassword] = useState<string>('password123');
+  const [authMode, setAuthMode] = useState<AuthMode>('login');
+
+  const [name, setName] = useState<string>('');
+  const [email, setEmail] = useState<string>('');
+  const [password, setPassword] = useState<string>('');
+  const [confirmPassword, setConfirmPassword] = useState<string>('');
+
   const [loading, setLoading] = useState<boolean>(false);
   const [summary, setSummary] = useState<MeSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [infoMessage, setInfoMessage] = useState<string | null>(null);
   const [fplIdInput, setFplIdInput] = useState<string>('');
 
   // After login, load /me/summary
@@ -59,6 +67,7 @@ export default function Index() {
   const handleLogin = async () => {
     try {
       setError(null);
+      setInfoMessage(null);
       setLoading(true);
       const data = await login(email, password);
       setToken(data.token);
@@ -68,6 +77,54 @@ export default function Index() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleRegister = async () => {
+    try {
+      setError(null);
+      setInfoMessage(null);
+
+      if (!name || !email || !password || !confirmPassword) {
+        setError('Please fill in all fields.');
+        return;
+      }
+
+      if (password !== confirmPassword) {
+        setError('Passwords do not match.');
+        return;
+      }
+
+      setLoading(true);
+      await register(name, email, password, confirmPassword);
+
+      // Registration succeeded:
+      // - Go back to login
+      // - Show success message
+      // - Clear passwords (keep email so they can log in easily)
+      setAuthMode('login');
+      setPassword('');
+      setConfirmPassword('');
+      setInfoMessage(
+        'Account created successfully. Check your email for a verification link, then log in.'
+      );
+    } catch (err: any) {
+      console.log(err?.response?.data ?? err?.message ?? err);
+      setError('Registration failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRegisterPress = () => {
+    setError(null);
+    setInfoMessage(null);
+    setAuthMode('register');
+  };
+
+  const handleGoToLogin = () => {
+    setError(null);
+    setInfoMessage(null);
+    setAuthMode('login');
   };
 
   const loadSummary = async () => {
@@ -89,6 +146,7 @@ export default function Index() {
       setError(null);
       setLoading(true);
       await resendVerificationEmail();
+      await loadSummary();
     } catch (err: any) {
       console.log(err?.response?.data ?? err?.message ?? err);
       setError('Failed to resend email');
@@ -150,58 +208,40 @@ export default function Index() {
   // Screens
   // ─────────────
 
-  // 1) Not logged in → nice clean login screen
+  // 1) Not logged in → show auth screens
   if (!token) {
+    if (authMode === 'login') {
+      return (
+        <LoginScreen
+          email={email}
+          password={password}
+          loading={loading}
+          error={error}
+          infoMessage={infoMessage}
+          onChangeEmail={setEmail}
+          onChangePassword={setPassword}
+          onSubmit={handleLogin}
+          onPressRegister={handleRegisterPress}
+        />
+      );
+    }
+
+    // register mode
     return (
-      <SafeAreaView style={styles.safe}>
-        <KeyboardAvoidingView
-          style={styles.flex}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        >
-          <ScrollView
-            contentContainerStyle={styles.centeredContent}
-            keyboardShouldPersistTaps="handled"
-          >
-            <View style={styles.card}>
-              <Text style={styles.title}>Log in to FPL Helper</Text>
-              <Text style={styles.subtitle}>
-                Use the same email and password you registered in the app backend.
-              </Text>
-
-              <Text style={styles.label}>Email</Text>
-              <TextInput
-                value={email}
-                onChangeText={setEmail}
-                autoCapitalize="none"
-                keyboardType="email-address"
-                placeholder="you@example.com"
-                placeholderTextColor="#999"
-                style={styles.input}
-              />
-
-              <Text style={styles.label}>Password</Text>
-              <TextInput
-                value={password}
-                onChangeText={setPassword}
-                secureTextEntry
-                placeholder="••••••••"
-                placeholderTextColor="#999"
-                style={styles.input}
-              />
-
-              {error && <Text style={styles.error}>{error}</Text>}
-
-              <View style={styles.buttonWrapper}>
-                <Button
-                  title={loading ? 'Logging in...' : 'Login'}
-                  onPress={handleLogin}
-                  disabled={loading}
-                />
-              </View>
-            </View>
-          </ScrollView>
-        </KeyboardAvoidingView>
-      </SafeAreaView>
+      <RegisterScreen
+        name={name}
+        email={email}
+        password={password}
+        confirmPassword={confirmPassword}
+        loading={loading}
+        error={error}
+        onChangeName={setName}
+        onChangeEmail={setEmail}
+        onChangePassword={setPassword}
+        onChangeConfirmPassword={setConfirmPassword}
+        onSubmit={handleRegister}
+        onPressGoToLogin={handleGoToLogin}
+      />
     );
   }
 
@@ -220,12 +260,12 @@ export default function Index() {
 
   const { user, email_verified, has_fpl_entry_id, has_team } = summary;
 
-  // 3) Email not verified → show verify screen
+  // 3) Email not verified → verify screen
   if (!email_verified) {
     return (
       <SafeAreaView style={styles.safe}>
         <ScrollView contentContainerStyle={styles.screenContainer}>
-          <Text style={styles.title}>Hey {user.name} 👋</Text>
+          <Text style={styles.title}>Hey {user.name}</Text>
           <Text style={styles.subtitle}>
             You need to verify your email ({user.email}) before continuing.
           </Text>
@@ -233,10 +273,10 @@ export default function Index() {
           {error && <Text style={styles.error}>{error}</Text>}
 
           <View style={styles.buttonWrapper}>
-            <Button
-              title={loading ? 'Sending...' : 'Resend verification email'}
+            <PrimaryButton
+              title="Resend verification email"
               onPress={handleResendVerification}
-              disabled={loading}
+              loading={loading}
             />
           </View>
         </ScrollView>
@@ -255,25 +295,7 @@ export default function Index() {
             in the URL (the entry ID).
           </Text>
 
-          <Text style={styles.label}>FPL Entry ID</Text>
-          <TextInput
-            value={fplIdInput}
-            onChangeText={setFplIdInput}
-            keyboardType="numeric"
-            placeholder="1234567"
-            placeholderTextColor="#999"
-            style={styles.input}
-          />
-
           {error && <Text style={styles.error}>{error}</Text>}
-
-          <View style={styles.buttonWrapper}>
-            <Button
-              title={loading ? 'Linking...' : 'Link FPL ID'}
-              onPress={handleLinkFpl}
-              disabled={loading}
-            />
-          </View>
         </ScrollView>
       </SafeAreaView>
     );
@@ -292,10 +314,10 @@ export default function Index() {
           {error && <Text style={styles.error}>{error}</Text>}
 
           <View style={styles.buttonWrapper}>
-            <Button
-              title={loading ? 'Syncing...' : 'Sync my team'}
+            <PrimaryButton
+              title="Sync my team"
               onPress={handleSyncTeam}
-              disabled={loading}
+              loading={loading}
             />
           </View>
         </ScrollView>
@@ -303,11 +325,11 @@ export default function Index() {
     );
   }
 
-  // 6) Everything ready → "home" state
+  // 6) Everything ready → home state
   return (
     <SafeAreaView style={styles.safe}>
       <ScrollView contentContainerStyle={styles.screenContainer}>
-        <Text style={styles.title}>Welcome back, {user.name} 👋</Text>
+        <Text style={styles.title}>Welcome back, {user.name}</Text>
         <Text style={styles.subtitle}>
           Your FPL entry ID: {user.fpl_entry_id}
         </Text>
@@ -315,7 +337,7 @@ export default function Index() {
         {error && <Text style={styles.error}>{error}</Text>}
 
         <View style={styles.buttonWrapper}>
-          <Button
+          <PrimaryButton
             title="View my team (console.log for now)"
             onPress={handleViewTeam}
           />
@@ -328,32 +350,14 @@ export default function Index() {
 // --------- Styles ---------
 
 const styles = StyleSheet.create({
-  flex: {
-    flex: 1,
-  },
   safe: {
     flex: 1,
-    backgroundColor: '#f3f4f6', // light gray
-  },
-  centeredContent: {
-    flexGrow: 1,
-    justifyContent: 'center',
-    padding: 16,
+    backgroundColor: '#f3f4f6',
   },
   screenContainer: {
     flexGrow: 1,
     padding: 16,
     justifyContent: 'flex-start',
-  },
-  card: {
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
-    padding: 20,
-    shadowColor: '#000',
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 3,
   },
   title: {
     fontSize: 24,
@@ -365,21 +369,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#4b5563',
     marginBottom: 20,
-  },
-  label: {
-    fontSize: 14,
-    color: '#374151',
-    marginBottom: 4,
-    marginTop: 12,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: '#d1d5db',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    backgroundColor: '#ffffff',
-    fontSize: 16,
   },
   error: {
     color: '#b91c1c',
