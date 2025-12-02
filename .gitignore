@@ -1,0 +1,28 @@
+# Node
+/node_modules
+/mobile/node_modules
+
+# PHP / Composer
+/vendor
+/backend/vendor
+
+# OS / Editor
+.DS_Store
+/.idea
+/.vscode
+
+# Environment / secrets
+.env
+.env.*
+backend/.env
+mobile/.env
+
+# Laravel
+/storage/*.key
+/public/storage
+/storage/logs/*
+/bootstrap/cache/*
+
+# Expo / React Native
+.expo
+.expo-shared
