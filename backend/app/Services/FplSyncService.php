@@ -10,6 +10,7 @@ use App\Models\Player;
 use App\Models\Club;
 use App\Models\Fixture;
 use App\Models\PlayerGameweekStat;
+use Carbon\Carbon;
 
 class FplSyncService
 {
@@ -51,14 +52,17 @@ class FplSyncService
         $team->squadSlots()->delete();
 
         foreach ($data['picks'] as $pick) {
-            // FPL element id for the player
-            $fplPlayerId = $pick['element'] ?? null;
-            if (! $fplPlayerId) continue;
+            $fplPlayerId = $pick['element'] ?? null; // FPL element-id
+            if (! $fplPlayerId) {
+                continue;
+            }
 
             $player = Player::where('fpl_player_id', $fplPlayerId)->first();
-            if (! $player) continue;
+            if (! $player) {
+                continue;
+            }
 
-            $position   = $pick['position'] ?? 1;       // 1–15
+            $position   = $pick['position'] ?? 1; // 1–15
             $isStarting = $position <= 11;
 
             $team->squadSlots()->create([
@@ -71,7 +75,7 @@ class FplSyncService
     }
 
     // ──────────────────────────
-    // Bootstrap-sync (har du redan)
+    // Bootstrap-sync
     // ──────────────────────────
 
     public function syncBootstrap(): void
@@ -127,49 +131,59 @@ class FplSyncService
     }
 
     // ──────────────────────────
-    // NY: synca fixtures
+    // Synca fixtures
     // ──────────────────────────
 
     public function syncFixtures(): void
-    {
-        $fixtures = $this->client->fixtures();
+{
+    $fixtures = $this->client->fixtures();
 
-        foreach ($fixtures as $fx) {
-            // vissa fixtures kan sakna event om de är långt fram
-            if (empty($fx['event'])) {
-                continue;
-            }
-
-            $gw = Gameweek::where('number', $fx['event'])->first();
-            if (! $gw) {
-                continue;
-            }
-
-            $homeClub = Club::where('fpl_team_id', $fx['team_h'])->first();
-            $awayClub = Club::where('fpl_team_id', $fx['team_a'])->first();
-
-            if (! $homeClub || ! $awayClub) {
-                continue;
-            }
-
-            Fixture::updateOrCreate(
-                [
-                    'gameweek_id'  => $gw->id,
-                    'home_club_id' => $homeClub->id,
-                    'away_club_id' => $awayClub->id,
-                ],
-                [
-                    'kickoff_at'      => $fx['kickoff_time'] ?? null,
-                    'home_difficulty' => $fx['team_h_difficulty'] ?? null,
-                    'away_difficulty' => $fx['team_a_difficulty'] ?? null,
-                    'finished'        => $fx['finished'] ?? false,
-                ]
-            );
+    foreach ($fixtures as $fx) {
+        if (empty($fx['event'])) {
+            continue;
         }
+
+        $gw = Gameweek::where('number', $fx['event'])->first();
+        if (! $gw) {
+            continue;
+        }
+
+        $homeClub = Club::where('fpl_team_id', $fx['team_h'])->first();
+        $awayClub = Club::where('fpl_team_id', $fx['team_a'])->first();
+
+        if (! $homeClub || ! $awayClub) {
+            continue;
+        }
+
+        // kickoff_time från FPL är ISO8601 (t.ex. 2025-08-15T19:00:00Z)
+        $kickoff = null;
+        if (! empty($fx['kickoff_time'])) {
+            try {
+                $kickoff = Carbon::parse($fx['kickoff_time'])->toDateTimeString();
+            } catch (\Throwable $e) {
+                // Om något är knas med formatet – skippa just kickoff, men spara övrigt
+                $kickoff = null;
+            }
+        }
+
+        Fixture::updateOrCreate(
+            [
+                'gameweek_id'  => $gw->id,
+                'home_club_id' => $homeClub->id,
+                'away_club_id' => $awayClub->id,
+            ],
+            [
+                'kickoff_at'      => $kickoff,
+                'home_difficulty' => $fx['team_h_difficulty'] ?? null,
+                'away_difficulty' => $fx['team_a_difficulty'] ?? null,
+                'finished'        => $fx['finished'] ?? false,
+            ]
+        );
     }
+}
 
     // ──────────────────────────
-    // NY: synca player history
+    // Synca player history (FPL-bas)
     // ──────────────────────────
 
     public function syncPlayerHistory(): void
@@ -184,7 +198,6 @@ class FplSyncService
             }
 
             foreach ($summary['history'] as $row) {
-                // 'round' är GW-numret i FPL
                 $gw = Gameweek::where('number', $row['round'])->first();
                 if (! $gw) {
                     continue;
@@ -203,12 +216,16 @@ class FplSyncService
                         'clean_sheets'   => $row['clean_sheets'],
                         'goals_conceded' => $row['goals_conceded'],
                         'bonus'          => $row['bonus'],
-                        // xg/xa kan fyllas senare från ett annat API
+                        // xg/xa fyller vi via FPL-Elo/andra källor
                     ]
                 );
             }
         }
     }
+
+    // ──────────────────────────
+    // Helpers
+    // ──────────────────────────
 
     protected function mapElementType(int $type): string
     {

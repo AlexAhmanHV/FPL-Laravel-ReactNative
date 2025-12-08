@@ -9,12 +9,9 @@ use App\Models\Fixture;
 
 class ExpectedPointsService
 {
-    /**
-     * Huvudmetod: beräkna EP för en given spelare i en given GW.
-     */
     public function forPlayerAndGameweek(Player $player, Gameweek $gw): float
     {
-        // 1. Hämta senaste upp till 4 GWs innan denna GW
+        // 1. Hämta senaste upp till 4 GWs innan denna GW (för form/xG etc)
         $recentStats = $player->gameweekStats()
             ->whereHas('gameweek', function ($q) use ($gw) {
                 $q->where('number', '<', $gw->number);
@@ -34,36 +31,20 @@ class ExpectedPointsService
         $xgScore           = $this->xgScore($recentStats);            // xG + xA per 90
         $minutesProb       = $this->minutesProbability($recentStats); // 0–1 baserat på minuter
         $flagsFactor       = $this->manualFlagsFactor($player);       // 0–1 injury/rotation
+        $trendFactor       = $this->trendFactor($player, $gw);        // ~0.9–1.1 "hot/cold"
 
         // 3. Blanda ihop del-scorerna till en bas
-        //    (justera vikterna efter smak senare)
         $base =
             $formScore    * 0.5 +  // form väger 50 %
             $fixtureScore * 0.2 +  // fixture väger 20 %
             $xgScore      * 0.3;   // xG/xA väger 30 %
 
-        // 4. Justera för speltid och manuella flags
+        // 4. Justera för speltid, manuella flags och trend
         $minutesFactor = $minutesProb * $flagsFactor;
 
-        $ep = $base * $minutesFactor;
+        $ep = $base * $minutesFactor * $trendFactor;
 
         return round(max($ep, 0), 2);
-    }
-
-    /**
-     * Helper: beräkna EP för "den här veckan" (current/next GW).
-     */
-    public function forPlayerThisWeek(Player $player): float
-    {
-        $gw = Gameweek::where('is_current', true)->first()
-            ?? Gameweek::where('is_next', true)->first()
-            ?? Gameweek::orderBy('number')->latest('number')->first();
-
-        if (! $gw) {
-            return 0.0;
-        }
-
-        return $this->forPlayerAndGameweek($player, $gw);
     }
 
     /**
@@ -102,7 +83,6 @@ class ExpectedPointsService
             return 3.0;
         }
 
-        // Om spelaren är i hemmalaget, ta home_difficulty, annars away_difficulty
         return $fixture->home_club_id == $player->club_id
             ? ($fixture->home_difficulty ?? 3)
             : ($fixture->away_difficulty ?? 3);
@@ -120,7 +100,6 @@ class ExpectedPointsService
 
     /**
      * xG/xA-score: enkel modell baserad på xG + xA per 90 min.
-     * (används bara om du fyller xg/xa-kolumnerna i player_gameweek_stats)
      */
     protected function xgScore($statsCollection): float
     {
@@ -135,35 +114,66 @@ class ExpectedPointsService
         $xgPer90 = $mins > 0 ? ($totalXg / $mins) * 90 : 0;
         $xaPer90 = $mins > 0 ? ($totalXa / $mins) * 90 : 0;
 
-        // xG + xA per 90 – du kan skala detta senare om det blir för stort
         return $xgPer90 + $xaPer90;
     }
 
     /**
      * Manuella flags: injury_risk och rotation_risk på spelaren (0–1).
-     * Kräver relationen $player->flags (hasOne PlayerFlag) för att påverka.
-     * Finns inte relationen → neutral effekt (1.0).
+     * Kräver relationen $player->flags (hasOne PlayerFlag).
      */
     protected function manualFlagsFactor(Player $player): float
     {
-        // Om modellen inte ens har relationen definierad → ingen påverkan.
-        if (! method_exists($player, 'flags')) {
-            return 1.0;
-        }
-
         $flags = $player->flags ?? null;
 
         if (! $flags) {
             return 1.0;
         }
 
-        $injuryRisk   = min(max($flags->injury_risk   ?? 0, 0), 1);
+        $injuryRisk   = min(max($flags->injury_risk ?? 0, 0), 1);
         $rotationRisk = min(max($flags->rotation_risk ?? 0, 0), 1);
 
         $injuryFactor   = 1 - $injuryRisk;
         $rotationFactor = 1 - $rotationRisk;
 
-        // t.ex. injury 0.3 och rotation 0.2 → faktor = 0.7 * 0.8 = 0.56
         return $injuryFactor * $rotationFactor;
+    }
+
+    /**
+     * Trendfaktor: jämför poäng/90 senaste 2 matcher vs senaste 6 matcher innan aktuell GW.
+     * Returnerar faktor ~0.9 (kall) – 1.1 (het). Neutral runt 1.0.
+     */
+    protected function trendFactor(Player $player, Gameweek $gw): float
+    {
+        // senaste 6 matcher innan gw
+        $last6 = $player->gameweekStats()
+            ->whereHas('gameweek', function ($q) use ($gw) {
+                $q->where('number', '<', $gw->number);
+            })
+            ->orderByDesc('gameweek_id')
+            ->take(6)
+            ->get();
+
+        if ($last6->isEmpty()) {
+            return 1.0;
+        }
+
+        $last2 = $last6->take(2);
+
+        $p90_6 = $this->pointsPer90($last6);
+        $p90_2 = $this->pointsPer90($last2);
+
+        if ($p90_6 <= 0) {
+            // om baseline är 0 (typ ingen form), låt trend vara neutral
+            return 1.0;
+        }
+
+        // relativ skillnad: (senaste2 - senaste6) / senaste6
+        $delta = ($p90_2 - $p90_6) / $p90_6; // kan vara negativ
+
+        // skala skillnaden försiktigt, t.ex. max ±20% effekt
+        $factor = 1.0 + ($delta * 0.2);
+
+        // clamp mellan 0.9 och 1.1
+        return max(0.9, min($factor, 1.1));
     }
 }

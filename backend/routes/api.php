@@ -72,6 +72,7 @@ Route::get(
     '/players/{player}/expected-points/{gameweek}',
     [PlayerController::class, 'expectedPoints']
 );
+Route::get('/players/transfer-targets', [PlayerController::class, 'transferTargets']);
 
 // ──────────────────────────
 // Dev-only routes (FPL sync)
