@@ -8,62 +8,71 @@ use App\Models\SquadSlot;
 use App\Models\Gameweek;
 use App\Models\Player;
 use App\Models\Club;
+use App\Models\Fixture;
+use App\Models\PlayerGameweekStat;
 
 class FplSyncService
 {
-public function syncUserTeam(User $user): void
-{
-    if (! $user->fpl_entry_id) {
-        throw new \RuntimeException('User has no FPL entry ID');
-    }
-
-    // Get current gameweek (fallback: first not finished)
-    $currentGw = Gameweek::where('is_current', true)->first()
-        ?? Gameweek::where('is_finished', false)->orderBy('number')->first();
-
-    if (! $currentGw) {
-        throw new \RuntimeException('No current or upcoming gameweek found.');
-    }
-
-    $data = $this->client->entryPicks($user->fpl_entry_id, $currentGw->number);
-
-    if (! isset($data['picks']) || ! is_array($data['picks'])) {
-        throw new \RuntimeException('Unexpected FPL response for entry picks.');
-    }
-
-    // Create or update the team row
-    $team = $user->teams()->firstOrCreate(
-        ['fpl_entry_id' => $user->fpl_entry_id],
-        ['name' => $data['entry']['name'] ?? ($user->name . "'s XI")]
-    );
-
-    // Clear previous squad
-    $team->squadSlots()->delete();
-
-    foreach ($data['picks'] as $pick) {
-        // FPL element id for the player
-        $fplPlayerId = $pick['element'] ?? null;
-        if (! $fplPlayerId) continue;
-
-        $player = Player::where('fpl_player_id', $fplPlayerId)->first();
-        if (! $player) continue;
-
-        $position   = $pick['position'] ?? 1;       // 1–15
-        $isStarting = $position <= 11;
-
-        $team->squadSlots()->create([
-            'player_id'   => $player->id,
-            'position'    => $player->position,
-            'is_starting' => $isStarting,
-            'order'       => $position,
-        ]);
-    }
-}
-
-
     public function __construct(
         protected FplClient $client
     ) {}
+
+    // ──────────────────────────
+    // Synca användarens FPL-lag
+    // ──────────────────────────
+
+    public function syncUserTeam(User $user): void
+    {
+        if (! $user->fpl_entry_id) {
+            throw new \RuntimeException('User has no FPL entry ID');
+        }
+
+        // Get current gameweek (fallback: first not finished)
+        $currentGw = Gameweek::where('is_current', true)->first()
+            ?? Gameweek::where('is_finished', false)->orderBy('number')->first();
+
+        if (! $currentGw) {
+            throw new \RuntimeException('No current or upcoming gameweek found.');
+        }
+
+        $data = $this->client->entryPicks($user->fpl_entry_id, $currentGw->number);
+
+        if (! isset($data['picks']) || ! is_array($data['picks'])) {
+            throw new \RuntimeException('Unexpected FPL response for entry picks.');
+        }
+
+        // Create or update the team row
+        $team = $user->teams()->firstOrCreate(
+            ['fpl_entry_id' => $user->fpl_entry_id],
+            ['name' => $data['entry']['name'] ?? ($user->name . "'s XI")]
+        );
+
+        // Clear previous squad
+        $team->squadSlots()->delete();
+
+        foreach ($data['picks'] as $pick) {
+            // FPL element id for the player
+            $fplPlayerId = $pick['element'] ?? null;
+            if (! $fplPlayerId) continue;
+
+            $player = Player::where('fpl_player_id', $fplPlayerId)->first();
+            if (! $player) continue;
+
+            $position   = $pick['position'] ?? 1;       // 1–15
+            $isStarting = $position <= 11;
+
+            $team->squadSlots()->create([
+                'player_id'   => $player->id,
+                'position'    => $player->position,
+                'is_starting' => $isStarting,
+                'order'       => $position,
+            ]);
+        }
+    }
+
+    // ──────────────────────────
+    // Bootstrap-sync (har du redan)
+    // ──────────────────────────
 
     public function syncBootstrap(): void
     {
@@ -114,6 +123,90 @@ public function syncUserTeam(User $user): void
                     'is_finished' => $event['finished'],
                 ]
             );
+        }
+    }
+
+    // ──────────────────────────
+    // NY: synca fixtures
+    // ──────────────────────────
+
+    public function syncFixtures(): void
+    {
+        $fixtures = $this->client->fixtures();
+
+        foreach ($fixtures as $fx) {
+            // vissa fixtures kan sakna event om de är långt fram
+            if (empty($fx['event'])) {
+                continue;
+            }
+
+            $gw = Gameweek::where('number', $fx['event'])->first();
+            if (! $gw) {
+                continue;
+            }
+
+            $homeClub = Club::where('fpl_team_id', $fx['team_h'])->first();
+            $awayClub = Club::where('fpl_team_id', $fx['team_a'])->first();
+
+            if (! $homeClub || ! $awayClub) {
+                continue;
+            }
+
+            Fixture::updateOrCreate(
+                [
+                    'gameweek_id'  => $gw->id,
+                    'home_club_id' => $homeClub->id,
+                    'away_club_id' => $awayClub->id,
+                ],
+                [
+                    'kickoff_at'      => $fx['kickoff_time'] ?? null,
+                    'home_difficulty' => $fx['team_h_difficulty'] ?? null,
+                    'away_difficulty' => $fx['team_a_difficulty'] ?? null,
+                    'finished'        => $fx['finished'] ?? false,
+                ]
+            );
+        }
+    }
+
+    // ──────────────────────────
+    // NY: synca player history
+    // ──────────────────────────
+
+    public function syncPlayerHistory(): void
+    {
+        $players = Player::whereNotNull('fpl_player_id')->get();
+
+        foreach ($players as $player) {
+            $summary = $this->client->playerSummary($player->fpl_player_id);
+
+            if (! isset($summary['history']) || ! is_array($summary['history'])) {
+                continue;
+            }
+
+            foreach ($summary['history'] as $row) {
+                // 'round' är GW-numret i FPL
+                $gw = Gameweek::where('number', $row['round'])->first();
+                if (! $gw) {
+                    continue;
+                }
+
+                PlayerGameweekStat::updateOrCreate(
+                    [
+                        'player_id'   => $player->id,
+                        'gameweek_id' => $gw->id,
+                    ],
+                    [
+                        'minutes'        => $row['minutes'],
+                        'total_points'   => $row['total_points'],
+                        'goals_scored'   => $row['goals_scored'],
+                        'assists'        => $row['assists'],
+                        'clean_sheets'   => $row['clean_sheets'],
+                        'goals_conceded' => $row['goals_conceded'],
+                        'bonus'          => $row['bonus'],
+                        // xg/xa kan fyllas senare från ett annat API
+                    ]
+                );
+            }
         }
     }
 

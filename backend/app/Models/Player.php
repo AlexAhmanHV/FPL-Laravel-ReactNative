@@ -12,4 +12,20 @@ class Player extends Model
     {
         return $this->belongsTo(Club::class);
     }
+
+public function gameweekStats()
+{
+    return $this->hasMany(\App\Models\PlayerGameweekStat::class);
+}
+
+public function flags()
+{
+    return $this->hasOne(\App\Models\PlayerFlag::class);
+}
+
+public function externalIds()
+{
+    return $this->hasMany(\App\Models\ExternalPlayerId::class);
+}
+
 }

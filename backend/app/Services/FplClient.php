@@ -1,5 +1,7 @@
 <?php
 
+// app/Services/FplClient.php
+
 namespace App\Services;
 
 use Illuminate\Support\Facades\Http;
@@ -10,25 +12,34 @@ class FplClient
 
     public function bootstrap(): array
     {
-        // Main FPL metadata: players, teams, events, etc.
         $response = Http::get($this->baseUrl . '/bootstrap-static/');
-
         return $response->json();
     }
 
     public function entrySummary(int $entryId): array
     {
-        // Summary info about a manager (team name, overall rank, etc.)
         $response = Http::get("{$this->baseUrl}/entry/{$entryId}/");
-
         return $response->json();
     }
 
     public function entryPicks(int $entryId, int $event): array
     {
-        // Picks for a specific gameweek
         $response = Http::get("{$this->baseUrl}/entry/{$entryId}/event/{$event}/picks/");
+        return $response->json();
+    }
 
+    // 🔽 NYTT: fixtures
+    public function fixtures(): array
+    {
+        $response = Http::get("{$this->baseUrl}/fixtures/");
+        return $response->json();
+    }
+
+    // 🔽 NYTT: spelarsummering (historik / future fixtures)
+    public function playerSummary(int $elementId): array
+    {
+        $response = Http::get("{$this->baseUrl}/element-summary/{$elementId}/");
         return $response->json();
     }
 }
+

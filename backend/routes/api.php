@@ -67,11 +67,23 @@ Route::middleware('auth:sanctum')->group(function () {
 // Players list (read-only public info is fine to expose)
 Route::get('/players', [PlayerController::class, 'index']);
 
+// Expected points för en specifik spelare & gameweek
+Route::get(
+    '/players/{player}/expected-points/{gameweek}',
+    [PlayerController::class, 'expectedPoints']
+);
+
 // ──────────────────────────
-// Dev-only route
+// Dev-only routes (FPL sync)
 // ──────────────────────────
 
-// FPL bootstrap sync - only available in local/dev environment
 if (app()->environment('local')) {
+    // Bootstrap: clubs, players, gameweeks osv.
     Route::get('/dev/sync-bootstrap', [SyncController::class, 'syncBootstrap']);
+
+    // Fixtures: matcher per gameweek/club
+    Route::get('/dev/sync-fixtures', [SyncController::class, 'syncFixtures']);
+
+    // Player history: fyller player_gameweek_stats
+    Route::get('/dev/sync-player-history', [SyncController::class, 'syncPlayerHistory']);
 }
